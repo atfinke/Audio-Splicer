@@ -4,12 +4,13 @@ set -e
 
 # Function to display script usage
 usage() {
-    echo "Usage: $0 -i <input_file> [-d <max_splice_duration>] [-o <output_directory>] [-w] [-v]"
+    echo "Usage: $0 -i <input_file> [-d <max_splice_duration>] [-o <output_directory>] [-w] [-v] [-s <playback_speed>]"
     echo "  -i: Input audio file path (required)"
     echo "  -d: Maximum splice duration in minutes (optional, default: 10)"
     echo "  -o: Output directory (optional, default: same as input file)"
     echo "  -w: Water MP3 player mode (optional)"
     echo "  -v: Verbose mode"
+    echo "  -s: Playback speed (optional, default: 1.0)"
     exit 1
 }
 
@@ -17,15 +18,17 @@ usage() {
 max_splice_duration=10  # default value in minutes
 water_mp3_player_mode=false
 verbose=false
+playback_speed=1.0  # default playback speed
 
 # Parse command line arguments
-while getopts ":i:d:o:wv" opt; do
+while getopts ":i:d:o:wvs:" opt; do
     case $opt in
         i) input_file="$OPTARG" ;;
         d) max_splice_duration="$OPTARG" ;;
         o) output_dir="$OPTARG" ;;
         w) water_mp3_player_mode=true ;;
         v) verbose=true ;;
+        s) playback_speed="$OPTARG" ;;
         \?) echo "Invalid option -$OPTARG" >&2; usage ;;
     esac
 done
@@ -33,6 +36,12 @@ done
 # Check if input file is provided and exists
 if [ -z "$input_file" ] || [ ! -f "$input_file" ]; then
     echo "Error: Input file is required and must exist."
+    usage
+fi
+
+# Validate playback speed
+if ! [[ "$playback_speed" =~ ^[0-9]+(\.[0-9]+)?$ ]] || (( $(echo "$playback_speed <= 0" | bc -l) )); then
+    echo "Error: Playback speed must be a positive number."
     usage
 fi
 
@@ -53,6 +62,7 @@ echo "Output directory: $output_dir"
 echo "Max splice duration: $((max_splice_duration / 60)) minutes"
 echo "Water MP3 player mode: $water_mp3_player_mode"
 echo "Verbose mode: $verbose"
+echo "Playback speed: $playback_speed"
 
 # Function to create silence
 create_silence() {
@@ -104,12 +114,16 @@ for (( i=1; i<=num_splits; i++ )); do
     ffmpeg_cmd+=" -i \"$track_announcement\" -i \"$announcement_silence\""
     filter_complex="[1][2]concat=n=2:v=0:a=1[announcement];[announcement][0]concat=n=2:v=0:a=1[audio]"
 
+    # Add playback speed adjustment to filter_complex
+    filter_complex+="; [audio]atempo=$playback_speed[speed_adjusted]"
+
     # Adjust quality settings based on water MP3 player mode
     if $water_mp3_player_mode; then
-        filter_complex+="; [audio]aformat=sample_fmts=s16:sample_rates=22050:channel_layouts=mono,highpass=f=200,compand=gain=-5[filtered_audio]"
-        ffmpeg_cmd+=" -filter_complex \"$filter_complex\" -map \"[filtered_audio]\" -acodec libmp3lame -b:a 32k"
+        filter_complex="[1][2]concat=n=2:v=0:a=1[announcement];[announcement][0]concat=n=2:v=0:a=1,atempo=$playback_speed,aformat=sample_fmts=s16:sample_rates=22050:channel_layouts=mono,highpass=f=200,compand=gain=-5[out]"
+        ffmpeg_cmd+=" -filter_complex \"$filter_complex\" -map \"[out]\" -acodec libmp3lame -b:a 32k"
     else
-        ffmpeg_cmd+=" -filter_complex \"$filter_complex\" -map \"[audio]\" -acodec libmp3lame -q:a 2"
+        filter_complex="[1][2]concat=n=2:v=0:a=1[announcement];[announcement][0]concat=n=2:v=0:a=1,atempo=$playback_speed[out]"
+        ffmpeg_cmd+=" -filter_complex \"$filter_complex\" -map \"[out]\" -acodec libmp3lame -q:a 2"
     fi
 
     # Set output file
